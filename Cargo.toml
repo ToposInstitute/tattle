@@ -2,6 +2,13 @@
 name = "tattle"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+keywords = ["compilers", "errors", "logging"]
+categories = ["compilers"]
+description = "Error reporting for compilers"
+repository = "https://github.com/ToposInstitute/tattle.git"
+homepage = "https://github.com/ToposInstitute/tattle"
+readme = "README.md"
 
 [dependencies]
 ansi_term = "0.12.1"
