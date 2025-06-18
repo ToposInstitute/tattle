@@ -5,6 +5,7 @@ use ansi_term::{Color, Style};
 use std::cell::Cell;
 use std::fmt;
 use std::fmt::Write;
+use std::io;
 use std::{cell::RefCell, rc::Rc};
 
 pub struct Error {
@@ -19,16 +20,45 @@ impl Error {
     }
 }
 
-#[derive(Clone)]
-pub enum ReporterOutput {
+#[derive(Clone, Copy)]
+pub enum Console {
     Stderr,
     Stdout,
-    String(Rc<RefCell<String>>),
-    Mem(Rc<RefCell<Vec<Error>>>),
+    None,
+}
+
+impl Console {
+    fn sink(&self) -> Option<Box<dyn io::Write>> {
+        match self {
+            Console::Stderr => Some(Box::new(io::stderr())),
+            Console::Stdout => Some(Box::new(io::stdout())),
+            Console::None => None,
+        }
+    }
+}
+
+pub enum Message {
+    Error(Error),
+    Info(String),
+}
+
+#[derive(Clone)]
+pub struct ReporterOutput {
+    console: Console,
+    log: Rc<RefCell<Vec<Message>>>,
+}
+
+impl ReporterOutput {
+    fn new() -> Self {
+        ReporterOutput {
+            console: Console::None,
+            log: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
 }
 
 pub struct SourceInfo {
-    text: String,
+    text: Rc<String>,
     newlines: Vec<usize>,
 }
 
@@ -49,7 +79,7 @@ impl fmt::Display for Repeated {
 }
 
 impl SourceInfo {
-    pub fn new(text: String) -> Self {
+    pub fn new(text: Rc<String>) -> Self {
         let mut newlines = Vec::new();
         for (i, c) in text.char_indices() {
             if c == '\n' {
@@ -131,89 +161,84 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn new(out: ReporterOutput, mut source: String) -> Self {
-        // this is used for the EOF
-        write!(source, " ").unwrap();
+    pub fn new(source: Rc<String>) -> Self {
         Self {
-            out,
+            out: ReporterOutput::new(),
             errored: Rc::new(Cell::new(false)),
             source: Rc::new(SourceInfo::new(source)),
         }
+    }
+
+    pub fn enable_stdout(mut self) -> Self {
+        self.out.console = Console::Stdout;
+        self
+    }
+
+    pub fn enable_stderr(mut self) -> Self {
+        self.out.console = Console::Stderr;
+        self
     }
 
     pub fn errored(&self) -> bool {
         self.errored.get()
     }
 
-    pub fn error<F: Fn(&mut fmt::Formatter) -> fmt::Result>(
-        &self,
-        loc: Loc,
-        code: ErrorCode,
-        writer: F,
-    ) {
+    pub fn error(&self, loc: Loc, code: ErrorCode, message: String) {
         self.errored.set(true);
-        self.error_option_loc(Some(loc), code, writer);
+        self.error_option_loc(Some(loc), code, message);
     }
 
-    #[allow(dead_code)]
-    pub fn error_unknown_loc<F: Fn(&mut fmt::Formatter) -> fmt::Result>(
-        &self,
-        code: ErrorCode,
-        writer: F,
-    ) {
-        self.error_option_loc(None, code, writer);
+    pub fn error_unknown_loc(&self, code: ErrorCode, message: String) {
+        self.error_option_loc(None, code, message);
     }
 
-    pub fn error_option_loc<F: Fn(&mut fmt::Formatter) -> fmt::Result>(
-        &self,
-        loc: Option<Loc>,
-        code: ErrorCode,
-        writer: F,
-    ) {
-        match &self.out {
-            ReporterOutput::Stdout => {
-                println!("error[{}]: {}", code.short, DynWriter(&writer));
-                if let Some(loc) = loc {
-                    let mut l = String::new();
-                    self.source
-                        .show_source(loc, &mut l, DisplayOptions::Terminal)
-                        .unwrap_or(());
-                    println!("{}", &l);
-                }
+    fn write_io(&self, e: &Error) {
+        self.out.console.sink().map(|mut io| {
+            writeln!(io, "error[{}]: {}", e.code.short, e.message).unwrap();
+            if let Some(loc) = e.loc {
+                let mut l = String::new();
+                self.source
+                    .show_source(loc, &mut l, DisplayOptions::Terminal)
+                    .unwrap_or(());
+                writeln!(io, "{}", &l).unwrap();
             }
-            ReporterOutput::Stderr => {
-                eprintln!("error[{}]: {}", code.short, DynWriter(&writer));
-                if let Some(loc) = loc {
-                    let mut l = String::new();
-                    self.source
-                        .show_source(loc, &mut l, DisplayOptions::Terminal)
-                        .unwrap_or(());
-                    eprintln!("{}", &l);
-                }
-            }
-            ReporterOutput::String(s) => {
-                let mut s = s.borrow_mut();
-                writeln!(s, "error[{}]: {}", code.short, DynWriter(&writer)).unwrap_or(());
-                if let Some(loc) = loc {
-                    self.source
-                        .show_source(loc, &mut *s, DisplayOptions::String)
-                        .unwrap_or(());
-                }
-            }
-            ReporterOutput::Mem(v) => {
-                let mut msg = String::new();
-                write!(&mut msg, "{}", DynWriter(&writer)).unwrap_or(());
-                v.borrow_mut().push(Error::new(code, loc, msg));
-            }
-        };
+        });
     }
-}
 
-struct DynWriter<'a, F: Fn(&mut fmt::Formatter) -> fmt::Result>(&'a F);
+    fn write_fmt(&self, e: &Error, f: &mut impl fmt::Write) {
+        writeln!(f, "error[{}]: {}", e.code.short, e.message).unwrap();
+        if let Some(loc) = e.loc {
+            self.source
+                .show_source(loc, f, DisplayOptions::String)
+                .unwrap_or(());
+        }
+    }
 
-impl<'a, F: Fn(&mut fmt::Formatter) -> fmt::Result> fmt::Display for DynWriter<'a, F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let w = self.0;
-        w(f)
+    pub fn error_option_loc(&self, loc: Option<Loc>, code: ErrorCode, message: String) {
+        let e = Error::new(code, loc, message);
+        self.write_io(&e);
+        self.out.log.borrow_mut().push(Message::Error(e))
+    }
+
+    pub fn info(&self, message: String) {
+        self.out.console.sink().map(|mut io| {
+            writeln!(io, "{}", message).unwrap();
+        });
+        self.out.log.borrow_mut().push(Message::Info(message));
+    }
+
+    pub fn report(&self) -> String {
+        let mut out = String::new();
+        for m in self.out.log.borrow().iter() {
+            match m {
+                Message::Error(e) => self.write_fmt(e, &mut out),
+                Message::Info(s) => {
+                    writeln!(&mut out, "{}", s).unwrap();
+                }
+            }
+        }
+        // remove the last newline
+        out.pop();
+        out
     }
 }
