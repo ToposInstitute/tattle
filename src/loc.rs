@@ -2,11 +2,11 @@
 pub struct Loc {
     pub start: usize,
     pub end: usize,
-    pub file: Option<usize>,
+    pub file: usize,
 }
 
 impl Loc {
-    pub fn new(start: usize, end: usize, file: Option<usize>) -> Self {
+    pub fn new(start: usize, end: usize, file: usize) -> Self {
         assert!(start <= end);
         Self { start, end, file }
     }
