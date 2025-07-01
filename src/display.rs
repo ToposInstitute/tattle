@@ -1,22 +1,15 @@
-use std::cell::Ref;
-use std::fmt::Write;
-use std::rc::Rc;
-use std::{cell::RefCell, fmt};
-
 use ansi_term::{Color, Style};
+use std::fmt;
 
-use crate::Reporter;
-use crate::{
-    reporter::{Message, Tattlee},
-    Loc,
-};
+use crate::{reporter::Message, Loc, Reporter};
 
-pub struct SourceInfo {
-    name: Option<String>,
-    text: Rc<String>,
+pub struct SourceInfo<'a> {
+    name: Option<&'a str>,
+    text: &'a str,
     newlines: Vec<usize>,
 }
 
+#[derive(Clone, Copy)]
 pub enum DisplayOptions {
     Terminal,
     String,
@@ -33,8 +26,8 @@ impl fmt::Display for Repeated {
     }
 }
 
-impl SourceInfo {
-    pub fn new(name: Option<String>, text: Rc<String>) -> Self {
+impl<'a> SourceInfo<'a> {
+    pub fn new(name: Option<&'a str>, text: &'a str) -> Self {
         let mut newlines = Vec::new();
         for (i, c) in text.char_indices() {
             if c == '\n' {
@@ -127,100 +120,43 @@ impl SourceInfo {
         }
         Ok(())
     }
-}
 
-pub struct SourceLibrary {
-    files: Rc<RefCell<Vec<SourceInfo>>>,
-}
-
-impl SourceLibrary {
-    pub fn new() -> Self {
-        Self {
-            files: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    pub fn register(&self, name: Option<String>, content: Rc<String>) -> usize {
-        let i = self.files.borrow().len();
-        self.files.borrow_mut().push(SourceInfo::new(name, content));
-        i
-    }
-
-    fn file(&self, i: usize) -> Option<Ref<SourceInfo>> {
-        Ref::filter_map(self.files.borrow(), |files| files.get(i)).ok()
-    }
-
-    fn format_report_to(&self, message: &Message, options: DisplayOptions, out: &mut String) {
-        match message {
+    pub fn write_fmt(
+        &self,
+        w: &mut impl fmt::Write,
+        m: &Message,
+        options: DisplayOptions,
+    ) -> fmt::Result {
+        match m {
             Message::Error(e) => {
-                writeln!(out, "error[{}]: {}", e.code.short, e.message).unwrap();
-                if let Some(l) = e.loc {
-                    if let Some(info) = &self.file(l.file) {
-                        info.show_source(l, out, options).unwrap()
-                    }
+                writeln!(w, "error[{}]: {}", e.code.short, e.message)?;
+                if let Some(loc) = e.loc {
+                    self.show_source(loc, w, options)?;
                 }
             }
             Message::Info(m) => {
-                writeln!(out, "info: {m}").unwrap();
+                writeln!(w, "info: {m}")?;
             }
         }
+        Ok(())
     }
 
-    fn format_report(&self, message: &Message, options: DisplayOptions) -> String {
-        let mut out = String::new();
-        self.format_report_to(message, options, &mut out);
-        out
-    }
-
-    pub fn format_log(&self, reporter: &Reporter) -> String {
-        let mut out = String::new();
-        for m in reporter.log().iter() {
-            self.format_report_to(m, DisplayOptions::String, &mut out);
+    pub fn extract_report_to(
+        &self,
+        w: &mut impl fmt::Write,
+        r: Reporter,
+        options: DisplayOptions,
+    ) -> fmt::Result {
+        for m in r.poll().into_iter() {
+            self.write_fmt(w, &m, options)?;
         }
+        Ok(())
+    }
+
+    pub fn extract_report_to_string(&self, r: Reporter) -> String {
+        let mut out = String::new();
+        self.extract_report_to(&mut out, r, DisplayOptions::String)
+            .unwrap();
         out
-    }
-}
-
-pub struct StdoutTattlee {
-    sources: SourceLibrary,
-}
-
-impl Tattlee for StdoutTattlee {
-    fn accept_report(&self, message: &Message) {
-        println!(
-            "{}",
-            self.sources
-                .format_report(message, DisplayOptions::Terminal)
-        )
-    }
-}
-
-pub struct StderrTattlee {
-    sources: SourceLibrary,
-}
-
-impl Tattlee for StderrTattlee {
-    fn accept_report(&self, message: &Message) {
-        eprintln!(
-            "{}",
-            self.sources
-                .format_report(message, DisplayOptions::Terminal)
-        )
-    }
-}
-
-pub struct StringTattlee {
-    sources: SourceLibrary,
-    out: Rc<RefCell<String>>,
-}
-
-impl Tattlee for StringTattlee {
-    fn accept_report(&self, message: &Message) {
-        write!(
-            self.out.borrow_mut(),
-            "{}",
-            self.sources.format_report(message, DisplayOptions::String)
-        )
-        .unwrap();
     }
 }

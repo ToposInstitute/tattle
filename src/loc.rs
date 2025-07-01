@@ -2,13 +2,12 @@
 pub struct Loc {
     pub start: usize,
     pub end: usize,
-    pub file: usize,
 }
 
 impl Loc {
-    pub fn new(start: usize, end: usize, file: usize) -> Self {
+    pub fn new(start: usize, end: usize) -> Self {
         assert!(start <= end);
-        Self { start, end, file }
+        Self { start, end }
     }
 
     pub fn slice<'a>(&self, source: &'a str) -> &'a str {
