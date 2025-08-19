@@ -1,5 +1,5 @@
 use ansi_term::{Color, Style};
-use std::fmt;
+use std::{fmt, io};
 
 use crate::{reporter::Message, Loc, Reporter};
 
@@ -150,6 +150,22 @@ impl<'a> SourceInfo<'a> {
         for m in r.poll().into_iter() {
             self.write_fmt(w, &m, options)?;
         }
+        Ok(())
+    }
+
+    pub fn extract_report_to_io(
+        &self,
+        w: &mut impl io::Write,
+        r: Reporter,
+        options: DisplayOptions,
+    ) -> io::Result<()> {
+        let mut buf = String::new();
+        for m in r.poll().into_iter() {
+            self.write_fmt(&mut buf, &m, options)
+                .expect("failed to format message {m}");
+            w.write(buf.as_bytes())?;
+        }
+        w.flush()?;
         Ok(())
     }
 
